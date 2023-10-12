@@ -7,7 +7,8 @@
 #' `FeatureLayer` or `Table`. For `ImageServer`s, utilize [`arc_raster()`].
 #'
 #' @param url The url of the remote resource. Must be of length one.
-#' @param token default uses the `ARCGIS_TOKEN`environment variable.
+#' @param token an access token used to authorize against the REST API.
+#'  By default uses the `ARCGIS_TOKEN` environment variable.
 #'
 #' @seealso arc_select arc_raster
 #' @export

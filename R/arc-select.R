@@ -1,14 +1,26 @@
 #' Retrieve a feature layer
 #'
-#' Give a `FeatureLayer` or `Table` object, retrieve its data as an `sf` object or `tibble` resepctively.
+#' Give a `FeatureLayer` or `Table` object, retrieve its data as an `sf` object or `tibble` respectively.
 #'
-#' @inheritParams source
+#' @details
+#'
+#' See [reference documentation](https://developers.arcgis.com/rest/services-reference/enterprise/query-feature-service-layer-.htm#GUID-BC2AD141-3386-49FB-AA09-FF341145F614) for possible arguments.
+#'
+#' @inheritParams prepare_spatial_filter
+#' @inheritParams arc_open
 #' @param x an object of class `FeatureLayer` or `Table`.
 #' @param fields a character vector of the field names that you wish to be returned. By default all fields are returned.
 #' @param where a simple SQL where statement indicating which features should be selected.
 #' @param crs the spatial reference to be returned. If the CRS is different than the `FeatureLayer`'s CRS, a transformation will occur server-side. Ignored for `Table` objects.
 #' @param n_max the maximum number of features to return. By default returns every feature available. Unused at the moment.
-#' @param ... additional query parameters passed to the API. See [reference documentation](https://developers.arcgis.com/rest/services-reference/enterprise/query-feature-service-layer-.htm#GUID-BC2AD141-3386-49FB-AA09-FF341145F614) for possible arguments.
+#' @param ... additional query parameters passed to the API endpoint.
+#'
+#' @examples
+#'
+#' if (interactive()) {
+#'
+#' }
+#'
 #' @export
 arc_select <- function(
     x,
@@ -18,6 +30,7 @@ arc_select <- function(
     filter_geom,
     predicate = "intersects",
     n_max = Inf,
+    token = Sys.getenv("ARCGIS_TOKEN"),
     ...
 ) {
   # Developer note:
@@ -52,6 +65,9 @@ arc_select <- function(
     query[["outFields"]] <- paste0(fields, collapse = ",")
   }
 
+  # if where is not missing, populate:
+  if (!missing(where)) query[["where"]] <- where
+
   # handle filter geometry if not missing
   if (!missing(filter_geom)) {
     # determine the appropriate crs
@@ -76,7 +92,7 @@ arc_select <- function(
   x <- update_params(x, !!!query)
 
   # send the request
-  collect_layer(x, n_max = n_max, ...)
+  collect_layer(x, n_max = n_max, token = token, ...)
 }
 
 # This is the workhorse function that actually executes the queries
@@ -123,23 +139,7 @@ collect_layer <- function(x, n_max = Inf, token = Sys.getenv("ARCGIS_TOKEN"), ..
   feats_per_page <- x[["maxRecordCount"]]
 
   # count the number of features in a query
-  n_req <-
-    httr2::req_url_query(
-      httr2::req_url_query(
-        httr2::req_url_path_append(req, "query"),
-        !!!query_params[c("where", "outFields", "f", "token")]
-      ),
-      returnCountOnly = "true"
-    )
-
-  suppressMessages(
-    n_feats <- httr2::resp_body_json(
-      httr2::req_perform(
-        httr2::req_url_query(n_req, f = "pjson"),
-        error_call = error_call
-      ), check_type = FALSE
-    )[["count"]]
-  )
+  n_feats <- count_results(req, query, token)
 
   if (is.null(n_feats)) {
     cli::cli_abort(
@@ -164,7 +164,7 @@ collect_layer <- function(x, n_max = Inf, token = Sys.getenv("ARCGIS_TOKEN"), ..
   if (n_pages == 0) {
     offsets <- 0
   } else {
-    offsets = c(0, (feats_per_page * 1:n_pages) + 1)
+    offsets <- c(0, (feats_per_page * 1:n_pages) + 1)
   }
 
   # create a list of requests
@@ -192,11 +192,7 @@ collect_layer <- function(x, n_max = Inf, token = Sys.getenv("ARCGIS_TOKEN"), ..
   res <- do.call(rbind, res)
 
   if (is.null(res)) {
-    cli::cli_alert_info(
-      "No features returned from query",
-      call = error_call
-    )
-
+    cli::cli_alert_info("No features returned from query")
     return(data.frame())
   }
 
@@ -298,4 +294,23 @@ validate_params <- function(params, token) {
   params
 }
 
+#' Given a query, determine how many features will be returned
+count_results <- function(req, query, token) {
+  n_req <- httr2::req_url_query(
+    httr2::req_body_form(
+      httr2::req_url_path_append(req, "query"),
+      !!!validate_params(query, token)
+    ),
+    returnCountOnly = "true",
+  )
+
+  resp <- httr2::resp_body_string(
+    httr2::req_perform(
+      httr2::req_url_query(n_req, f = "json"),
+      error_call = rlang::caller_env()
+    )
+  )
+
+  RcppSimdJson::fparse(resp)[["count"]]
+}
 

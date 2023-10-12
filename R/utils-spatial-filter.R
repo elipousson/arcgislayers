@@ -1,20 +1,22 @@
-
 #' Prepare json for spatial filters
 #'
 #' @param filter_geom an object of class `bbox`, `sfc` or `sfg` used to filter
-#'   query results based on a predicate function. If an `sfc` object is provided
-#'   it will be transformed to the layers spatial reference. If the `sfc` is
-#'   missing a CRS (or is an `sfg` object) it is assumed to be in the layers
-#'   spatial reference. If an `sfc` object has multiple features, the features
-#'   are unioned with [sf::st_union()]. If an `sfc` object has MULTIPOLYGON
-#'   geometry, the features are treated as polygonal coverage and unioned with
-#'   `is_coverage = TRUE` before being cast to POLYGON geometry with
-#'   [sf::st_cast()].
+#'   query results based on a predicate function.
 #' @param predicate default `"intersects"`. Possible options are `"intersects"`,  `"contains"`,  `"crosses"`,  `"overlaps"`,  `"touches"`, and `"within"`.
+#'
+#' @details
+#' If an `sfc` object is provided
+#' it will be transformed to the layers spatial reference. If the `sfc` is
+#' missing a CRS (or is an `sfg` object) it is assumed to be in the layers
+#' spatial reference. If an `sfc` object has multiple features, the features
+#' are unioned with [sf::st_union()]. If an `sfc` object has MULTIPOLYGON
+#' geometry, the features are treated as polygonal coverage and unioned with
+#' `is_coverage = TRUE` before being cast to POLYGON geometry with
+#' [sf::st_cast()].
 #'
 #' ### Spatial Binary Predicates:
 #'
-#' - esriSpatialRelIntersects
+#' - esriSpatialRelIntersects:
 #' - esriSpatialRelContains
 #' - esriSpatialRelCrosses
 #' - esriSpatialRelOverlaps
@@ -22,6 +24,7 @@
 #' - esriSpatialRelWithin
 #' @export
 #' @rdname spatial_filter
+#' @keywords internal
 prepare_spatial_filter <- function(
     filter_geom,
     crs,
@@ -31,21 +34,13 @@ prepare_spatial_filter <- function(
   # Developer Note: CRS cannot be missing
   if (inherits(filter_geom, "bbox")) {
     filter_geom <- sf::st_as_sfc(filter_geom)
+  } else if (any(!sf::st_is_valid(filter_geom))) {
+    filter_geom <- sf::st_make_valid(filter_geom)
   }
 
-  # if its an sfc object it must be length one
-  if (inherits(filter_geom, "sfc")) {
-    if (length(filter_geom) > 1) {
-      filter_geom <- sf::st_union(filter_geom)
-    }
-
-    # extract the sfg object which is used to write Esri json
-    filter_geom <- filter_geom[[1]]
-  }
-
-  # if a multi polygon stop, must be a single polygon see
+  # if an sfc_multipolygon we union and cast to polygon
   # related issue: https://github.com/R-ArcGIS/arcgislayers/issues/4
-  if (inherits(filter_geom, "MULTIPOLYGON")) {
+  if (inherits(filter_geom, "sfc_MULTIPOLYGON")) {
     cli::cli_inform(
       c(
         "!" = "{.arg filter_geom} cannot be a {.val MULTIPOLYGON} geometry.",
@@ -54,9 +49,19 @@ prepare_spatial_filter <- function(
       ),
       call = rlang::caller_env()
     )
-
-    filter_geom <- sf::st_union(filter_geom, is_coverage = TRUE)
+    filter_geom <- sf::st_union(filter_geom)
     filter_geom <- sf::st_cast(filter_geom, to = "POLYGON")
+  } else if (inherits(filter_geom, "MULTIPOLYGON")) {
+    filter_geom <- sf::st_cast(filter_geom, "POLYGON")
+  }
+
+  # if its an sfc object it must be length one
+  if (inherits(filter_geom, "sfc")) {
+    if (length(filter_geom) > 1) {
+      filter_geom <- sf::st_union(filter_geom)
+    }
+    # extract the sfg object which is used to write Esri json
+    filter_geom <- filter_geom[[1]]
   }
 
   list(

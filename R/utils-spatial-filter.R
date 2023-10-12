@@ -28,26 +28,15 @@ prepare_spatial_filter <- function(
     predicate
 ) {
 
+  # Developer Note: CRS cannot be missing
   if (inherits(filter_geom, "bbox")) {
     filter_geom <- sf::st_as_sfc(filter_geom)
-  }
-
-  if (inherits(filter_geom, "sfg")) {
-    filt_crs <- crs
   }
 
   # if its an sfc object it must be length one
   if (inherits(filter_geom, "sfc")) {
     if (length(filter_geom) > 1) {
       filter_geom <- sf::st_union(filter_geom)
-    }
-
-    # if the CRS is missing use the layer's CRS
-    # otherwise use the CRS of the filter_geom object
-    filt_crs <- sf::st_crs(filter_geom)
-
-    if (is.na(filt_crs)) {
-      filt_crs <- crs
     }
 
     # extract the sfg object which is used to write Esri json

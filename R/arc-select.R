@@ -42,24 +42,24 @@
 #' @export
 #' @examples
 #' \dontrun{
-#'   # define the feature layer url
-#'   furl <- paste0(
-#'     "https://services3.arcgis.com/ZvidGQkLaDJxRSJ2/arcgis/rest",
-#'     "/services/PLACES_LocalData_for_BetterHealth/FeatureServer/0"
-#'   )
+#' # define the feature layer url
+#' furl <- paste0(
+#'   "https://services3.arcgis.com/ZvidGQkLaDJxRSJ2/arcgis/rest",
+#'   "/services/PLACES_LocalData_for_BetterHealth/FeatureServer/0"
+#' )
 #'
-#'   flayer <- arc_open(furl)
+#' flayer <- arc_open(furl)
 #'
-#'   arc_select(
-#'     flayer,
-#'     fields = c("StateAbbr", "TotalPopulation")
-#'   )
+#' arc_select(
+#'   flayer,
+#'   fields = c("StateAbbr", "TotalPopulation")
+#' )
 #'
-#'   arc_select(
-#'     flayer,
-#'     fields = c("OBJECTID", "PlaceName"),
-#'     where = "TotalPopulation > 1000000"
-#'   )
+#' arc_select(
+#'   flayer,
+#'   fields = c("OBJECTID", "PlaceName"),
+#'   where = "TotalPopulation > 1000000"
+#' )
 #' }
 #' @returns An sf object, or a data.frame
 arc_select <- function(
@@ -73,17 +73,19 @@ arc_select <- function(
     predicate = "intersects",
     n_max = Inf,
     page_size = NULL,
-    token = arc_token()
-) {
-
+    token = arc_token()) {
   # Developer note:
   # For this function we extract the query object and manipulate the elements
   # inside of the query object to modify our request. We then splice those
   # values back into `x` and send our request
-  # note that everything that goes into our quey must be the json that will
+  # note that everything that goes into our query must be the json that will
   # be sent directly to the API request which is why we convert it to json
   # before we use `update_params()`
   check_inherits_any(x, c("FeatureLayer", "Table", "ImageServer"))
+  check_number_whole(n_max, min = 0, allow_infinite = TRUE)
+  check_string(where, allow_null = TRUE, allow_empty = FALSE)
+  check_character(fields, allow_null = TRUE)
+  check_number_whole(page_size, min = 1, max = x[["maxRecordCount"]], allow_null = TRUE)
 
   # extract the query object
   query <- attr(x, "query")
@@ -107,13 +109,18 @@ arc_select <- function(
   }
 
   # handle fields and where clause if missing
+  fields <- fields %||% query[["outFields"]]
+
+  # make sure that fields actually exist
   fields <- match_fields(
-    fields = fields %||% query[["outFields"]],
-    values = x[["fields"]][["name"]]
+    fields = fields,
+    values = c(x[["fields"]][["name"]], "")
   )
 
+  # include the fields the query
   query[["outFields"]] <- fields
 
+  # include the where clause if present
   query[["where"]] <- where %||% query[["where"]]
 
   # set returnGeometry depending on on geometry arg
@@ -155,11 +162,7 @@ collect_layer <- function(
     token = arc_token(),
     page_size = NULL,
     ...,
-    on_error = "continue",
-    progress = getOption("arcgislayers.progress", TRUE),
-    error_call = rlang::caller_env()
-) {
-
+    error_call = rlang::caller_env()) {
   # 1. Make base request
   # 2. Identify necessary query parameters
   # 3. Figure out offsets and update query parameters
@@ -171,11 +174,8 @@ collect_layer <- function(
   # sets token and agent
   req <- arc_base_req(x[["url"]], token)
 
-  obj_class <- class(x)
-
   # determine if the layer can query
-  can_query <- switch(
-    obj_class,
+  can_query <- switch(class(x),
     "FeatureLayer" = grepl("query", x[["capabilities"]], ignore.case = TRUE),
     "Table" = grepl("query", x[["capabilities"]], ignore.case = TRUE),
     "ImageServer" = x[["supportsAdvancedQueries"]],
@@ -185,7 +185,7 @@ collect_layer <- function(
   # throw error if the layer cannot query
   if (!can_query) {
     cli::cli_abort(
-      "{obj_class} {.val {x[['name']]}} does not support querying",
+      "{class(x)} {.val {x[['name']]}} does not support querying",
       call = error_call
     )
   }
@@ -195,92 +195,136 @@ collect_layer <- function(
 
   # if the outSR isn't set, set it to be the same as x
   if (inherits(x, "FeatureLayer") && is.null(query[["outSR"]])) {
-    crs <- sf::st_crs(x)
-    query[["outSR"]] <- jsonify::to_json(
-      validate_crs(crs, call = error_call)[[1]],
-      unbox = TRUE
-    )
+    query[["outSR"]] <- jsonify::to_json(validate_crs(sf::st_crs(x))[[1]], unbox = TRUE)
   }
+
+  # retain outFields vector and create flag
+  out_fields <- query[["outFields"]]
+  has_out_fields <- !is.null(out_fields) && !identical(out_fields, "*")
 
   # parameter validation ----------------------------------------------------
   # get existing parameters
-  query_params <- validate_params(query)
+
+  # determine_format() chooses between pbf and json
+  out_f <- determine_format(x)
+
+  query_params <- validate_params(
+    query,
+    out_f
+  )
 
   # Offsets -----------------------------------------------------------------
 
-  # set page size based on the maximum allowed to be returned
-  page_size <- set_page_size(
-    page_size,
+  # count the number of features in a query
+  n_feats <- count_results(
+    req = req,
+    query = query_params,
+    n_max = n_max,
+    error_call = error_call
+  )
+
+  all_resps <- get_query_resps(
+    x = x,
+    req = req,
+    n_feats = n_feats,
+    page_size = page_size,
+    query_params = query_params,
+    error_call = error_call
+  )
+
+  if (out_f == "pbf") {
+    res <- arcpbf::resps_data_pbf(all_resps)
+  } else {
+    # fetch the results
+    res <- lapply(
+      all_resps,
+      # all_resps[!has_error],
+      function(x) {
+        parse_esri_json(
+          httr2::resp_body_string(x),
+          call = error_call
+        )
+      }
+    )
+
+    # combine results
+    res <- rbind_results(res, call = error_call)
+  }
+
+  # Drop fields that aren't selected to avoid returning OBJECTID when not
+  # selected
+  if (rlang::is_named(res) && has_out_fields) {
+    out_fields <- c(out_fields, attr(res, "sf_column"))
+    match_nm <- match(tolower(out_fields), tolower(names(res)))
+    res <- res[, match_nm[!is.na(match_nm)], drop = FALSE]
+  }
+
+  if (rlang::is_empty(res)) {
+    cli::cli_alert_info("No features returned from query")
+    return(res)
+  }
+
+  if (inherits(res, "sf") && is.na(sf::st_crs(res))) {
+    sf::st_crs(res) <- sf::st_crs(x)
+  }
+
+  res
+}
+
+#' Get query responses with handling for layers that don't support pagination
+#' @noRd
+get_query_resps <- function(
+    req,
+    x,
+    n_feats,
+    page_size = NULL,
+    query_params = list(),
+    error_call = rlang::caller_env()) {
+  # If pagination is not supported, we create one query and return the results
+  # in a list with a warning. This way the maximum number of results is returned
+  # but the user is also informed that they will not get tha maximum number of
+  # records. Otherwise, we continue and utilize the pagination
+  if (isFALSE(x[["advancedQueryCapabilities"]][["supportsPagination"]])) {
+    if (n_feats > x[["maxRecordCount"]]) {
+      cli::cli_warn(
+        c(
+          "{class(x)} {.val {x[['name']]}} does not support pagination and
+          complete results can't be returned.",
+          "i" = "{n_feats} features are selected by the query and the maximum
+          is {x[['maxRecordCount']]} records."
+        )
+      )
+    }
+
+    req <- httr2::req_body_form(
+      httr2::req_url_path_append(req, "query"),
+      !!!query_params
+    )
+
+    resp <- httr2::req_perform(req, error_call = error_call)
+
+    return(list(resp))
+  }
+
+  # create a list of record counts based on number of features, page size and max records
+  record_offsets <- set_record_offsets(
+    n_feats = n_feats,
+    page_size = page_size,
     max_records = x[["maxRecordCount"]],
     error_call = error_call
   )
 
-  feats_per_page <- page_size
-
-  # count the number of features in a query
-  n_feats <- count_results(req, query_params, error_call = error_call)
-
-  # identify the number of pages needed to return all features
-  n_feats <- validate_n_feats(n_feats, n_max, error_call = error_call)
-
-  # calculate the total number of requests to be made
-  n_pages <- ceiling(n_feats / feats_per_page)
-  # these values get passed to `resultOffset`
-  offsets <- (1:n_pages - 1) * feats_per_page
-  # create vector of page sizes to be passed to `resultRecordCount`
-  record_counts <- rep(feats_per_page, n_pages)
-  # modify the last offset to have `resultRecordCount` of the remainder
-  # this lets us get an exact value
-  record_counts[n_pages] <- n_feats - offsets[n_pages]
-
   # create a list of requests from the offset and page sizes
   all_requests <- mapply(
     add_offset,
-    .offset = offsets,
-    .page_size = record_counts,
+    .offset = record_offsets[["offsets"]],
+    .page_size = record_offsets[["counts"]],
     MoreArgs = list(.req = req, .params = query_params),
     SIMPLIFY = FALSE
   )
 
   # make all requests and store responses in list
-  all_resps <- httr2::req_perform_parallel(
-    all_requests,
-    on_error = on_error,
-    progress = progress
-  )
-
-  # identify any errors
-  # TODO: determine how to handle errors
-  # has_error <- vapply(all_resps, function(x) inherits(x, "error"), logical(1))
-
-  # fetch the results
-  # TODO Considering httr2::resps_data but it uses `vctrs::list_unchop` which drops
-  # the sf class
-  res <- lapply(
-    all_resps,
-    # all_resps[!has_error],
-    function(x) {
-      parse_esri_json(
-        httr2::resp_body_string(x),
-        call = error_call
-      )
-    }
-  )
-
-  res <- rbind_results(res, x = x, error_call = error_call)
-
-  out_fields <- query[["outFields"]]
-
-  if (rlang::is_named(res) && !is.null(out_fields) && !identical(out_fields, "*")) {
-    keep_fields <- c(
-      tolower(names(res)) %in% tolower(c(out_fields, attr(x, "sf_column")))
-    )
-
-    # Drop fields that aren't selected
-    res <- res[ , keep_fields, drop = FALSE]
-  }
-
-  res
+  httr2::req_perform_parallel(all_requests, on_error = "continue")
 }
 
 
@@ -331,12 +375,11 @@ check_inherits_any <- function(x,
 
   class <- cli::cli_vec(
     class,
-    style = list("before" = "`", "after" = "`")
+    style = list("before" = "`", "after" = "`", "vec-last" = " or ")
   )
 
   cli::cli_abort(
-    "{.arg {arg}} must be a {.or {class}} object,
-    not {.obj_simple_type {.cls {class(x)}}}.",
+    "{.arg {arg}} must be a {class} object, not {.obj_simple_type {.cls {class(x)}}}.",
     call = call
   )
 }
@@ -350,19 +393,24 @@ check_inherits_any <- function(x,
 #' @export
 #' @examples
 #' \dontrun{
-#'   furl <- paste0(
-#'     "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/",
-#'     "USA_Major_Cities_/FeatureServer/0"
-#'   )
+#' furl <- paste0(
+#'   "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/",
+#'   "USA_Major_Cities_/FeatureServer/0"
+#' )
 #'
-#'  flayer <- arc_open(furl)
-#'  update_params(flayer, outFields = "NAME")
+#' flayer <- arc_open(furl)
+#' update_params(flayer, outFields = "NAME")
 #' }
 #' @returns An object of the same class as `x`
 update_params <- function(x, ...) {
   query <- attr(x, "query")
   params <- rlang::list2(...)
-  attr(x, "query") <- c(params, query[!(names(query) %in% names(params))])
+
+  for (name in names(params)) {
+    query[[name]] <- params[[name]]
+  }
+
+  attr(x, "query") <- query
   x
 }
 
@@ -391,7 +439,7 @@ add_offset <- function(.req, .offset, .page_size, .params) {
 #'
 #' @keywords internal
 #' @noRd
-validate_params <- function(params) {
+validate_params <- function(params, f = "json") {
   if (!is.null(params[["outFields"]])) {
     params[["outFields"]] <- paste0(params[["outFields"]], collapse = ",")
   } else {
@@ -404,22 +452,91 @@ validate_params <- function(params) {
 
   # set output type to geojson if we return geometry, json if not
   if (is.null(params[["returnGeometry"]]) || isTRUE(params[["returnGeometry"]])) {
-    params[["f"]] <- "json"
+    params[["f"]] <- f
   } else {
-    params[["f"]] <- "json"
+    params[["f"]] <- f
   }
 
   params
 }
 
-#' Validate fields
+# Given a query, determine how many features will be returned
+#' @noRd
+count_results <- function(req, query, n_max = Inf, error_call = rlang::caller_env()) {
+  n_req <- httr2::req_body_form(
+    httr2::req_url_path_append(req, "query"),
+    # count results should always use json
+    !!!validate_params(query, query[["f"]]),
+    returnCountOnly = "true"
+  )
+
+  resp <- httr2::resp_body_string(
+    httr2::req_perform(
+      httr2::req_url_query(n_req, f = "json"),
+      error_call = error_call
+    )
+  )
+
+  n_results <- RcppSimdJson::fparse(resp)[["count"]]
+
+  # identify the number of pages needed to return all features
+  validate_results_count(n_results, n_max = n_max, error_call = error_call)
+}
+
+
+#' Set and validate n_feats based on n_max
+#' @noRd
+validate_results_count <- function(
+    n_results = NULL,
+    n_max = Inf,
+    error_call = rlang::caller_env()) {
+  if (is.null(n_results)) {
+    cli::cli_abort(
+      c(
+        "Can't determine the number of requested features.",
+        "i" = "Did you set custom parameters via {.arg ...} or
+        use an invalid {.arg where} argument?"
+      ),
+      call = error_call
+    )
+  } else if (!is.infinite(n_max) && (n_results > n_max)) {
+    # TODO: Implement a verbose parameter that can enable this message
+    # See https://github.com/R-ArcGIS/arcgislayers/pull/180#issuecomment-2049631271
+    # cli::cli_bullets(
+    #   c(
+    #     "i" = "Query results limited to {n_max} out of {n_feats} available feature{?s}.",
+    #     "!" = "Increase {.arg n_max} value to return all selected features."
+    #     )
+    # )
+
+    n_results <- n_max
+  }
+
+  if (is.numeric(n_results)) {
+    return(n_results)
+  }
+
+  cli::cli_abort(
+    c(
+      "Can't determine the number of requested features.",
+      "*" = "Set {.arg n_max} or check to make sure query parameters are valid."
+    ),
+    call = error_call
+  )
+}
+
+#' Match fields
 #'
-#' [validate_fields()] ensures that fields passed to [arc_select()] match
+#' [match_fields()] ensures that fields passed to [arc_select()] match
 #' permissible values.
 #'
 #' @keywords internal
 #' @noRd
-match_fields <- function(fields, values = NULL, multiple = TRUE, error_call = rlang::caller_env()) {
+match_fields <- function(fields,
+                         values = NULL,
+                         multiple = TRUE,
+                         error_arg = rlang::caller_arg(fields),
+                         error_call = rlang::caller_env()) {
   if (is.null(fields) || identical(fields, "*")) {
     return(fields)
   }
@@ -432,40 +549,54 @@ match_fields <- function(fields, values = NULL, multiple = TRUE, error_call = rl
     fields,
     values = values,
     multiple = multiple,
+    error_arg = error_arg,
     error_call = error_call
   )
 }
 
-# Given a query, determine how many features will be returned
-count_results <- function(req, query_params, error_call = rlang::caller_env()) {
-  n_req <- httr2::req_body_form(
-    httr2::req_url_path_append(req, "query"),
-    !!!query_params,
-    returnCountOnly = "true"
+#' Set record counts to retrieve based on page size and number of pages
+#' @noRd
+set_record_offsets <- function(n_feats = NULL,
+                               page_size = NULL,
+                               max_records = NULL,
+                               error_call = rlang::caller_env()) {
+  # set page size based on the maximum allowed to be returned
+  page_size <- validate_page_size(
+    page_size,
+    max_records = max_records,
+    error_call = error_call
   )
 
-  resp <- httr2::resp_body_string(
-    httr2::req_perform(
-      httr2::req_url_query(n_req, f = "json"),
-      error_call = error_call
-    )
-  )
+  # calculate the total number of requests to be made
+  n_pages <- ceiling(n_feats / page_size)
+  # these values get passed to `resultOffset`
+  offsets <- (1:n_pages - 1) * page_size
+  # create vector of page sizes to be passed to `resultRecordCount`
+  counts <- rep(page_size, n_pages)
+  # modify the last offset to have `resultRecordCount` of the remainder
+  # this lets us get an exact value
+  counts[n_pages] <- n_feats - offsets[n_pages]
 
-  RcppSimdJson::fparse(resp)[["count"]]
+  list(
+    "offsets" = offsets,
+    "counts" = counts
+  )
 }
 
 #' Set page size and check page size validity
 #'
 #' @noRd
-set_page_size <- function(
+validate_page_size <- function(
     page_size = NULL,
-    max_records,
-    error_call = rlang::caller_env()
-    ) {
+    max_records = NULL,
+    error_call = rlang::caller_env()) {
   # if page_size is null, use max records (default)
   page_size <- page_size %||% max_records
 
-  if (!is.numeric(page_size)) {
+  # coerce to integer
+  page_size <- as.integer(page_size)
+
+  if (!is.numeric(page_size) && !length(page_size) == 0) {
     cli::cli_abort(
       "{.arg page_size} must be a numeric scalar,
       not {.obj_type_friendly {page_size}}",
@@ -473,8 +604,6 @@ set_page_size <- function(
     )
   }
 
-  # coerce to integer
-  page_size <- as.integer(page_size)
   page_size_len <- length(page_size)
 
   if (!rlang::has_length(page_size, 1)) {
@@ -502,74 +631,40 @@ set_page_size <- function(
   page_size
 }
 
-#' Set and validate n_feats based on n_max
-#' @noRd
-validate_n_feats <- function(
-    n_feats = NULL,
-    n_max = Inf,
-    error_call = rlang::caller_env()
-    ) {
-  # if n_max is provided need to reduce the number of pages
-  if (is.null(n_feats) || (!is.infinite(n_max) && (n_feats > n_max))) {
-    # FIXME: Consider adding a warning if n_max is used
-    n_feats <- n_max
+
+# Protocol Buffer helpers ------------------------------------------------
+
+supports_pbf <- function(x, arg = rlang::caller_arg(x), call = rlang::caller_call()) {
+  # verify that x is an layer
+  obj_check_layer(x, arg, call)
+
+  # extract supported query formats
+  query_formats_raw <- x[["supportedQueryFormats"]]
+
+  # perform a check to make sure the supported query formats are
+  # actually there if not return false. This shouldn't happen though.
+  if (is.null(query_formats_raw)) {
+    return(FALSE)
   }
 
-  if (!is.null(n_feats)) {
-    return(n_feats)
+  # split and convert to lower case
+  formats <- tolower(strsplit(query_formats_raw, ", ")[[1]])
+  # if for some reason the first element is null we return false
+  # note sure of the utility of this check though.
+
+  if (is.null(formats)) {
+    return(FALSE)
   }
 
-  cli::cli_abort(
-    c(
-      "Can't determine the number of features for request.",
-      "*" = "Check to make sure {.arg where} and any query parameters are valid."
-    ),
-    call = error_call
-  )
+  # perform the check
+  "pbf" %in% formats
 }
 
-#' Bind list with parsed ESRI geometry into sf object
-#' @noRd
-rbind_results <- function(res, x, error_call = rlang::caller_env()) {
-  empty_res <- vapply(res, rlang::is_empty, FALSE)
-
-  if (all(empty_res)) {
-    cli::cli_alert_info("No features returned from query")
-    return(data.frame())
-  }
-
-  # Drop empty results from sf list
-  if (any(empty_res)) {
-    res <- res[!empty_res]
-  }
-
-  res <- rbind_res_list(res, error_call = error_call)
-
-  if (inherits(res, "sf") && is.na(sf::st_crs(res))) {
-    sf::st_crs(res) <- sf::st_crs(x)
-  }
-
-  res
-}
-
-#' Combine data frame list
-#'
-#' Inspired by arcpbf https://github.com/R-ArcGIS/arcpbf/blob/main/R/post-process.R
-#' @noRd
-rbind_res_list <- function(.list, error_call = rlang::caller_env()) {
-  # TODO: enhance this with additional suggested packages
-  if (rlang::is_installed("vctrs")) {
-    # FIXME: This drops the sf class which has to be restored with sf::st_as_sf
-    x <- vctrs::vec_rbind(!!!.list, .error_call = error_call)
-
-    is_sf_list <- all(vapply(.list, \(x) {inherits(x, "sf")}, TRUE))
-
-    if (is_sf_list) {
-      x <- sf::st_as_sf(x)
-    }
-
+determine_format <- function(x, arg = rlang::caller_arg(x), call = rlang::caller_call()) {
+  use_pbf <- supports_pbf(x, arg, call)
+  if (use_pbf) {
+    "pbf"
   } else {
-    x <- do.call(rbind.data.frame, .list)
+    "json"
   }
-  x
 }

@@ -1,8 +1,16 @@
 # arcgislayers (development)
 
-- Improve handling of `filter_geom` argument for `arc_select()` (#166) by creating concave hull for MULTIPOLYGON inputs
-- Fix issue with `collect_layer()` handling of API responses that mix geometry and empty elements
-- Add new `alias` parameter to `arc_read()` (#169) to support labelling fields or renaming fields based on field alias values
+- `arc_open()` will now work on any resource that works when `f=json` is set in the query parameters closes [#163](https://github.com/R-ArcGIS/arcgislayers/issues/163)
+- Now uses [`{arcpbf}`](https://r.esri.com/arcpbf/index.html) when a layer supports protocol buffers. 
+  - This is an ~3x speed improvement over json processing.
+- New `query_layer_attachments()` and `download_attachments()` help you access and download attachments to a layer
+- `arc_raster()` now downloads the exported image to a temp file instead of creating a connection to the url returned. This fixes an issue where rasters would stop working after the url had been removed. 
+- Add `alias` argument to `arc_read()` allowing replacement or labelling of field names with alias values (#169)
+- Add `pull_field_aliases()` utility function
+- `arc_select()` now uses `arcgisutils::rbind_results()` for faster row-binding if `{collapse}`, `{data.table}`, `{vctrs}` are installed (#175)
+- Preserve order of `fields` column names for `arc_select()` (fixes minor bug with `arc_read` handling of `col_names`) (#185)
+- Set CRS for a FeatureLayer or ImageServer using `"wkid"` or `"wkt"` value if `"latestWkid"` is missing. (#188)
+- Fix issue with `arc_select()` when layer can't support pagination. (#191)
 
 # arcgislayers 0.2.0
 

@@ -1,8 +1,67 @@
-# arcgislayers (development version)
+# arcgislayers 0.6.0
+
+## New features
+
+- `add_attachment()`: a new function to add attachments to a set of features in a feature layer.
+- Adds `llms.txt`
+
+
+## Bug Fixes
+
+- `arc_select()` returns an empty `data.frame` instead of `NULL` when no features are returned from a query
+- `add_features()` uses `rlang::is_interactive()` to determine if the user is running in an interactive session instead of `base::interactive()`. This allows for the specification of which mode the function should run in using `rlang::with_interactive()` or `rlang::local_interactive()`.
+
+
+## Breaking changes
+
+# arcgislayers 0.5.1
+
+## New features
+
+- `encode_field_values(codes = "replace-valid")` allows users to retain invalid values when replacing coded values. ([#267](https://github.com/R-ArcGIS/arcgislayers/issues/267))
+
+# arcgislayers 0.5.0
+
+## New features
+
+- New `update_attachments()` function modifies a feature service's attachments <https://github.com/R-ArcGIS/arcgislayers/pull/277>
+- `arc_open()` now works with item IDs or a variety of URLs such as item, user, group, and more <https://github.com/R-ArcGIS/arcgislayers/pull/275>
+- `add_definition()` (#178), `update_definition()` (#127), and `delete_definition()` functions for FeatureServer and FeatureLayer objects.
+
+## Bug Fixes
+
+- Improve `update_features()` with an error message when the `objectid` is not an `integer` ([#250](https://github.com/R-ArcGIS/arcgislayers/issues/250))
+- `get_layer()` warns as expected on invalid layer names values. ([#251](https://github.com/R-ArcGIS/arcgislayers/issues/251))
+- `encode_field_values()` handles numeric columns with coded value domains without warnings or errors. ([#237](https://github.com/R-ArcGIS/arcgislayers/issues/237))
+- `encode_field_values()` now properly skips `range` field types ([#263](https://github.com/R-ArcGIS/arcgislayers/issues/263))
+
+## Breaking changes
+
+- `update_features()` is now parallelized and sends updates in chunks see `chunk_size` argument and `progress` arguments. The return type is now a `data.frame` and not a list with `updateResults`
+- `delete_features()` is now parallelized and deletes in chunks. See above.
+- `{arcgislayers}` now depends on R 4.2 or higher.
+- `list_service_raster_fns()` is now deprecated in favor of `list_raster_fns()`
+
+
+# arcgislayers 0.4.0
+
+## New features
+
+- Address bug in JSON parsing by bumping the version of RcppSimdJson
+- Improve handling of `filter_geom` by `arc_select()` by warning if applying `sf::st_union()` to the filter does not generate a length 1 sfc, or if `filter_geom` is supplied when accessing a Table, or if `filter_geom` is empty (@elipousson, #166)
+- Export `set_layer_aliases()` (previously used internally by `arc_read()`) to allow use of alias values with data returned by `arc_select()` (#169).
+- Add new `encode_field_values()` function to support replacement or labeling of values with coded value domains (#134).
+- Improve input checks for `get_layer()`, `get_all_layers()`, and `get_layers()` to require FeatureServer, MapServer, or GroupLayer input objects.
+
+## Bug fixes
+
+- Adjusts `arc_select()` to not error out when `query` capability isn't explicitly listed. Instead `cli_alert_danger()` is used to communicate the issue <https://github.com/R-ArcGIS/arcgislayers/pull/230>
+- `arc_select()` includes argument name in error message when `...` contains non-string values. <https://github.com/R-ArcGIS/arcgislayers/issues/226>
 
 ## Breaking changes
 
 - `dplyr` methods for `collect()`, `select()`, and `filter()` have been removed. <https://github.com/R-ArcGIS/arcgislayers/issues/111> <https://github.com/R-ArcGIS/arcgislayers/issues/224> <https://github.com/R-ArcGIS/arcgislayers/issues/218>
+- Soft deprecate `arc_read(col_names = "alias")` (use `arc_read(alias = "replace")` instead)
 
 # arcgislayers 0.3.1
 
@@ -17,15 +76,15 @@
 - `list_service_raster_fns()` is a new helper function to list available raster functions for an `ImageServer`
 - `arc_open()` ignores queries included in input URLs and retains any custom queries in the `query` attribute for `Table` and `FeatureLayer`s. ([#215](https://github.com/R-ArcGIS/arcgislayers/issues/215))
 
-## Breaking changes 
+## Breaking changes
 
 # arcgislayers 0.3.0
 
 - `arc_open()` will now work on any resource that works when `f=json` is set in the query parameters closes [#163](https://github.com/R-ArcGIS/arcgislayers/issues/163)
-- Now uses [`{arcpbf}`](https://r.esri.com/arcpbf/index.html) when a layer supports protocol buffers. 
+- Now uses [`{arcpbf}`](https://r.esri.com/arcpbf/index.html) when a layer supports protocol buffers.
   - This is an ~3x speed improvement over json processing.
 - New `query_layer_attachments()` and `download_attachments()` help you access and download attachments to a layer
-- `arc_raster()` now downloads the exported image to a temp file instead of creating a connection to the url returned. This fixes an issue where rasters would stop working after the url had been removed. 
+- `arc_raster()` now downloads the exported image to a temp file instead of creating a connection to the url returned. This fixes an issue where rasters would stop working after the url had been removed.
 - Add `alias` argument to `arc_read()` allowing replacement or labelling of field names with alias values (#169)
 - Add `pull_field_aliases()` utility function
 - `arc_select()` now uses `arcgisutils::rbind_results()` for faster row-binding if `{collapse}`, `{data.table}`, `{vctrs}` are installed (#175)
@@ -37,7 +96,7 @@
 
 - initial CRAN release
 
-# arcgislayers 0.1.0 
+# arcgislayers 0.1.0
 
 - `arc_open()` no longer removes `NULL` properties h/t [@elipousson](https://github.com/elipousson)
 - includes `page_size` argument to `arc_select()` allowing users to return smaller page sizes and avoid timeouts for dense geometries
@@ -56,7 +115,7 @@
 - repository made public
 - add lifecycle badges to all exported functions <https://github.com/R-ArcGIS/arcgislayers/pull/101>
 
-- **Breaking**: 
+- **Breaking**:
   - `token` arguments are required to be a valid `httr2_token` object (strings are not supported).
   - all `host` arguments are removed. Instead, the host is fetched from the `token`.
   - all `user` arguments are removed. Instead, the username is fetched from the `token`. If it is not found, an error is thrown.

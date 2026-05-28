@@ -20,10 +20,8 @@
 #'  reference. If the `sfc` is missing a CRS (or is an `sfg` object) it is
 #'  assumed to use the same spatial reference as the FeatureLayer. If the `sfc`
 #'  object has multiple features, the features are unioned with
-#'  [sf::st_union()]. If an `sfc` object has `MULTIPOLYGON` geometry, the features
-#'  cast to `MULTIPOINT` geometry with [sf::st_cast()] and then converted to a
-#'  `POLYGON` with [sf::st_concave_hull()] (using `ratio = 1` and `allow_holes =
-#'  FALSE`). All geometries are checked for validity before conversion.
+#'  [sf::st_union()]. If an `sfc` object has `MULTIPOLYGON` geometry, the
+#'  features are cast to `POLYGON` geometry and only the first element is used.
 #'
 #' @returns [prepare_spatial_filter()] returns a named list with the
 #'   `geometryType`, `geometry` (as Esri JSON), and spatial relation predicate.
@@ -33,27 +31,27 @@
 #' prepare_spatial_filter(sf::st_point(c(0, 5)), 4326, "intersects")
 #' @export
 prepare_spatial_filter <- function(
-    filter_geom,
-    crs,
-    predicate,
-    error_call = rlang::caller_env()
+  filter_geom,
+  crs,
+  predicate,
+  error_call = rlang::caller_env()
 ) {
-
   check_inherits_any(
     filter_geom,
     class = c("sfc", "sfg", "bbox"),
     call = error_call
   )
 
-  # NOTE: CRS cannot be missing
-  if (inherits(filter_geom, "bbox")) {
-    filter_geom <- sf::st_as_sfc(filter_geom)
-  } else if (any(!sf::st_is_valid(filter_geom))) {
-    filter_geom <- sf::st_make_valid(filter_geom)
+  if (is_sfc(filter_geom) && rlang::is_empty(filter_geom)) {
+    cli::cli_warn(
+      "{.arg filter_geom} contains no features and can't be used for query."
+    )
+
+    return(NULL)
   }
 
   # FIXME: Unsure how to handle sfg inputs w/o checking CRS
-  if (inherits(filter_geom, "sfg")) {
+  if (is_sfg(filter_geom)) {
     filter_crs <- crs
   } else {
     filter_crs <- sf::st_crs(filter_geom)
@@ -63,48 +61,68 @@ prepare_spatial_filter <- function(
     }
   }
 
-  # union multi-element sfc inputs (e.g. convert multiple POLYGON features to a
-  # single MULTIPOLYGON feature)
-  if (rlang::inherits_any(filter_geom, "sfc") && length(filter_geom) > 1) {
-    filter_geom <- sf::st_union(filter_geom)
-  }
-
-  # if an sfc_multipolygon we union and cast to polygon
-  # related issue: https://github.com/R-ArcGIS/arcgislayers/issues/4
-  if (rlang::inherits_any(filter_geom, c("sfc_MULTIPOLYGON", "MULTIPOLYGON"))) {
-    cli::cli_bullets(
-      c(
-        "!" = "{.arg filter_geom} geometry can't be {.val MULTIPOLYGON}.",
-        "i" = "Using {.fn sf::st_concave_hull} with {.code allow_holes = FALSE}
-        to convert to {.val POLYGON}."
-      )
-    )
-
-    filter_geom <- sf::st_cast(filter_geom, to = "MULTIPOINT")
-    filter_geom <- sf::st_concave_hull(filter_geom, ratio = 1, allow_holes = FALSE)
-  }
-
-  # if its an sfc object it must be length one
-  if (inherits(filter_geom, "sfc")) {
-    geom_length <- length(filter_geom)
-
-    if (geom_length > 1) {
-      cli::cli_warn(
-        c("{.arg filter_geom} is a {geom_length} length {.cls sfc} object.",
-          "i" = "Using geometry from first element only.")
-      )
-    }
-
-    # extract the sfg object which is used to write Esri json
-    filter_geom <- filter_geom[[1]]
-  }
+  filter_sfg <- filter_geom_as_sfg(filter_geom, error_call = error_call)
 
   list(
-    geometryType = arcgisutils::determine_esri_geo_type(filter_geom, call = error_call),
-    geometry = arcgisutils::as_esri_geometry(filter_geom, crs = filter_crs, call = error_call),
+    geometryType = arcgisutils::determine_esri_geo_type(
+      filter_sfg,
+      call = error_call
+    ),
+    geometry = arcgisutils::as_esri_geometry(
+      filter_sfg,
+      crs = filter_crs,
+      call = error_call
+    ),
     spatialRel = match_spatial_rel(predicate, error_call = error_call)
     # TODO is `inSR` needed if the CRS is specified in the geometry???
   )
+}
+
+#' Convert input filter_geom to a sfg object
+#' @noRd
+filter_geom_as_sfg <- function(
+  filter_geom,
+  error_call = rlang::caller_env()
+) {
+  # NOTE: CRS cannot be missing
+  if (inherits(filter_geom, "bbox")) {
+    filter_geom <- sf::st_as_sfc(filter_geom)
+  } else if (any(!sf::st_is_valid(filter_geom))) {
+    filter_geom <- sf::st_make_valid(filter_geom)
+  }
+
+  # union multi-element sfc inputs (e.g. convert multiple POLYGON features to a
+  # single MULTIPOLYGON feature)
+  if (is_sfc(filter_geom) && length(filter_geom) > 1) {
+    filter_geom <- sf::st_union(filter_geom)
+  }
+
+  # if an sfc_multipolygon we union and cast to polygon - see related issues:
+  # https://github.com/R-ArcGIS/arcgislayers/issues/4
+  # https://github.com/R-ArcGIS/arcgislayers/issues/166
+  if (rlang::inherits_any(filter_geom, c("sfc_MULTIPOLYGON", "MULTIPOLYGON"))) {
+    filter_geom <- sf::st_cast(filter_geom, to = "POLYGON")
+  }
+
+  # return any sfg object
+  if (is_sfg(filter_geom)) {
+    return(filter_geom)
+  }
+
+  # if its an sfc object it must be length one
+  geom_length <- length(filter_geom)
+
+  if (geom_length > 1) {
+    cli::cli_warn(
+      c(
+        "{.arg filter_geom} contains {geom_length} elements.",
+        "i" = "Using geometry from first element only."
+      )
+    )
+  }
+
+  # extract the sfg object which is used to write Esri json
+  filter_geom[[1]]
 }
 
 #' @description
@@ -123,8 +141,6 @@ prepare_spatial_filter <- function(
 #' @export
 #' @rdname spatial_filter
 match_spatial_rel <- function(predicate, error_call = rlang::caller_env()) {
-  check_string(predicate, allow_empty = FALSE, call = error_call)
-
   # determine the spatial relationship (predicate)
   esri_predicates <- c(
     # Part of a feature from the query feature is contained in a feature from
@@ -157,7 +173,23 @@ match_spatial_rel <- function(predicate, error_call = rlang::caller_env()) {
 
   # ensure a correct one has been chosen
   predicate <- tolower(predicate)
-  predicate <- rlang::arg_match(predicate, pred_arg_vals, error_call = error_call)
+  predicate <- rlang::arg_match(
+    predicate,
+    pred_arg_vals,
+    error_call = error_call
+  )
 
   esri_predicates[grepl(predicate, esri_predicates, ignore.case = TRUE)]
+}
+
+#' Is x a sfc object?
+#' @noRd
+is_sfc <- function(x) {
+  rlang::inherits_any(x, "sfc")
+}
+
+#' Is x a sfg object?
+#' @noRd
+is_sfg <- function(x) {
+  rlang::inherits_any(x, "sfg")
 }

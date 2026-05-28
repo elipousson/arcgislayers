@@ -4,6 +4,8 @@
 #'
 #' @references [ArcGIS REST Doc](https://developers.arcgis.com/rest/services-reference/enterprise/get-estimates-feature-service-layer-.htm)
 #' @examples
+#' \dontrun{
+#' if (identical(Sys.getenv("NOT_CRAN"), "true")) {
 #' furl <- paste0(
 #'   "https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/",
 #'   "USA_Counties_Generalized_Boundaries/FeatureServer/0"
@@ -11,12 +13,13 @@
 #'
 #' county_fl <- arc_open(furl)
 #' get_layer_estimates(county_fl)
+#' }
+#' }
 #' @export
 #' @returns
 #' A named list containing all estimate info. If `extent` is present,
 #' it is available as an object of class `bbox`.
 get_layer_estimates <- function(x, token = arc_token()) {
-
   # check if its a supported layer
   obj_check_layer(x)
 
@@ -35,7 +38,7 @@ get_layer_estimates <- function(x, token = arc_token()) {
   )
 
   resp <- httr2::req_perform(
-      httr2::req_url_query(est_req, f = "json")
+    httr2::req_url_query(est_req, f = "json")
   )
 
   # process json string
@@ -56,7 +59,3 @@ get_layer_estimates <- function(x, token = arc_token()) {
   # return the rest
   res_raw
 }
-
-
-
-

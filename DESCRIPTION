@@ -1,7 +1,7 @@
-Package: arcgislayers
 Type: Package
-Title: An Interface to ArcGIS Data Services
-Version: 0.3.1.9000
+Package: arcgislayers
+Title: Harness ArcGIS Data Services
+Version: 0.6.0
 Authors@R: c(
     person("Josiah", "Parry", , "josiah.parry@gmail.com", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0001-9910-865X")),
@@ -10,36 +10,39 @@ Authors@R: c(
     person("Kenneth", "Vernon", , "kenneth.b.vernon@gmail.com", role = "ctb",
            comment = c(ORCID = "0000-0003-0098-5092")),
     person("Martha", "Bass", role = "ctb",
-           comment = c(ORCID = "0009-0004-0268-5426"))
+           comment = c(ORCID = "0009-0004-0268-5426")),
+    person("Antony", "Barja", role = "ctb",
+           comment = c(ORCID = "0000-0001-5921-2858"))
   )
 Description: Enables users of 'ArcGIS Enterprise', 'ArcGIS Online', or
     'ArcGIS Platform' to read, write, publish, or manage vector and raster
     data via ArcGIS location services REST API endpoints
     <https://developers.arcgis.com/rest/>.
 License: Apache License (>= 2)
-Encoding: UTF-8
-LazyData: true
+URL: https://developers.arcgis.com/r-bridge,
+    https://github.com/R-ArcGIS/arcgislayers
+BugReports: https://github.com/R-ArcGIS/arcgislayers/issues
+Depends: 
+    R (>= 4.2.0)
 Imports: 
-    arcgisutils (>= 0.2.0),
+    arcgisutils (>= 0.4.0),
     arcpbf (>= 0.1.5),
     cli,
     httr2 (>= 1.0.5),
     jsonify,
     lifecycle,
-    RcppSimdJson,
+    RcppSimdJson (>= 0.1.13),
     rlang,
     sf,
     terra,
     utils
-Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
 Suggests: 
-    dbplyr,
-    dplyr,
-    rmarkdown,
     testthat (>= 3.0.0),
-    tidyselect,
-    vctrs
+    vctrs,
+    curl,
+    dplyr
 Config/testthat/edition: 3
-URL: https://r.esri.com/arcgislayers/, https://github.com/R-ArcGIS/arcgislayers
-BugReports: https://github.com/R-ArcGIS/arcgislayers/issues
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3

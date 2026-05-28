@@ -1,5 +1,3 @@
-
-
 # Add Features ------------------------------------------------------------
 
 #' Add Features to Feature Layer
@@ -11,6 +9,7 @@
 #'  the alias. See Details for more.
 #' @param rollback_on_failure if anything errors, roll back writes.
 #'  Defaults to `TRUE`.
+#' @param progress default `TRUE`. A progress bar to be rendered by `httr2` to track requests.
 #' @param token your authorization token.
 #'
 #' @inheritParams arc_select
@@ -19,7 +18,7 @@
 #' `r lifecycle::badge("experimental")`
 #'
 #' For a more detailed guide to adding, updating, and deleting features, view the
-#' tutorial on the [R-ArcGIS Bridge website](https://r.esri.com/r-bridge-site/location-services/workflows/add-delete-update.html).
+#' tutorial on the [R-ArcGIS Bridge website](https://developers.arcgis.com/r-bridge/editing/overview/).
 #'
 #' Regarding the `match_on` argument:when publishing an object to an ArcGIS Portal
 #' from R, the object's names are provided as the alias. The object's names are
@@ -49,14 +48,14 @@
 #' - `update_features()` returns a list with an element named `updateResults` which is a `data.frame` with columns `objectId`, `uniqueId`, `globalId`, `success`
 #' - `delete_features()` returns a list with an element named `deleteResults` which is a `data.frame` with columns `objectId`, `uniqueId`, `globalId`, `success`
 add_features <- function(
-    x,
-    .data,
-    chunk_size = 2000,
-    match_on = c("name", "alias"),
-    rollback_on_failure = TRUE,
-    token = arc_token()
+  x,
+  .data,
+  chunk_size = 500,
+  match_on = c("name", "alias"),
+  rollback_on_failure = TRUE,
+  progress = TRUE,
+  token = arc_token()
 ) {
-
   # initial check for type of `x`
   obj_check_layer(x)
 
@@ -100,14 +99,13 @@ add_features <- function(
     }
     colnames(.data) <- cnames
   }
-
   inform_nin_feature(
     # columns not in the feature layer
     setdiff(cnames[!present_index], geo_col)
   )
 
   # subset accordingly
-  .data <- .data[, present_index]
+  .data <- .data[, present_index, drop = FALSE]
 
   # count the number of rows in a data frame
   n <- nrow(.data)
@@ -119,30 +117,46 @@ add_features <- function(
   base_req <- arc_base_req(x[["url"]], token)
   req <- httr2::req_url_path_append(base_req, "addFeatures")
 
+  n_chunks <- lengths(indices)[1]
   # pre-allocate list
-  all_reqs <- vector("list", length = lengths(indices)[1])
+  all_reqs <- vector("list", length = n_chunks)
+
+  # create a progress bar for chunking
+  if (progress) {
+    pb <- cli::cli_progress_bar(
+      "Chunking features",
+      type = "iterator",
+      total = n_chunks
+    )
+  }
 
   # populate the requests veector
   for (i in seq_along(all_reqs)) {
+    if (progress) {
+      cli::cli_progress_update(1, id = pb)
+    }
     start <- indices[["start"]][i]
     end <- indices[["end"]][i]
 
     all_reqs[[i]] <- httr2::req_body_form(
       req,
-      features = as_esri_features(.data[start:end,]),
+      features = as_esri_features(.data[start:end, , drop = FALSE]),
       rollbackOnFailure = rollback_on_failure,
       f = "json"
     )
   }
 
+  if (progress) {
+    cli::cli_progress_done(pb)
+  }
+
   # send the requests in parallel
-  all_resps <- httr2::req_perform_parallel(all_reqs)
+  all_resps <- httr2::req_perform_parallel(all_reqs, progress = progress)
 
   # parse the responses into a data frame
   do.call(
     rbind.data.frame,
     lapply(all_resps, function(res) {
-
       resp <- RcppSimdJson::fparse(
         httr2::resp_body_string(res)
       )
@@ -157,105 +171,17 @@ add_features <- function(
 }
 
 
-# Update Features ---------------------------------------------------------
-
-#' @export
-#' @inheritParams add_features
-#' @rdname modify
-update_features <- function(
-    x,
-    .data,
-    match_on = c("name", "alias"),
-    token = arc_token(),
-    rollback_on_failure = TRUE,
-    ...
-) {
-
-  match_on <- match.arg(match_on)
-
-  # TODO field types from x need to be compared to that of `.data`
-  # if the field types do not match either error or do the conversion for the user
-
-  # What is the difference between `applyEdits`, and `append` both are a way to do upserting.
-
-  # Update Feature Layer
-  # https://developers.arcgis.com/rest/services-reference/enterprise/update-features.htm
-  # check CRS compaitibility between x and `.data`
-  # feedback for rest api team:
-  # it is possible to specify the CRS of the input data for adding features or spatial
-  # filters, however it is _not_ possible for updating features. If it is, it is undocumented
-  # it would be nice to be able to utilize the the transformations server side
-  # rather than relying on GDAL client side.
-  # ALTERNATIVELY let me provide a feature set so i can pass in CRS
-  if (!identical(sf::st_crs(x), sf::st_crs(.data))) {
-
-    if (is.na(sf::st_crs(.data)) && inherits(.data, "sf")) {
-      cli::cli_warn(
-        c("{.arg data} is missing a CRS",
-          "i" = paste0("Setting CRS to ", sf::st_crs(x)$srid)
-        ))
-    } else if (inherits(.data, "sf")) {
-      cli::cli_abort(
-        c("{.arg x} and {.arg .data} must share the same CRS",
-          "*" = "Tranform {.arg .data} to the same CRS as {.arg x} with
-          {.fn sf::st_transform}"
-        )
-      )
-    }
-  }  # not that addFeatures does not update layer definitions so if any attributes
-  # are provided that aren't in the feature layer, they will be ignored
-  feature_fields <- list_fields(x)
-  cnames <- colnames(.data)
-
-  # find which columns are present in the layer
-  present_index <- cnames %in% feature_fields[[match_on]]
-
-  # fetch the geometry column name
-  geo_col <- attr(.data, "sf_column")
-
-  if (match_on == "alias") {
-    lu <- stats::setNames(feature_fields[["name"]], feature_fields[["alias"]])
-
-    # ensure the geo_col is present if its an sf object
-    if (inherits(.data, "sf")) {
-      cnames[length(cnames)] <- geo_col
-    } else {
-      cnames <- unname(lu[cnames])
-    }
-    colnames(.data) <- cnames
-  }
-
-  inform_nin_feature(
-    # columns not in the feature layer
-    setdiff(cnames[!present_index], geo_col)
-  )
-
-  # subset accordingly
-  .data <- .data[, present_index]
-
-  # create base request
-  req <- arc_base_req(paste0(x[["url"]], "/updateFeatures"), token)
-
-  req <- httr2::req_body_form(
-    req,
-    # transform `.data`
-    features = as_esri_features(.data),
-    rollbackOnFailure = rollback_on_failure,
-    f = "json",
-    ...
-  )
-
-  resp <- httr2::req_perform(req)
-  RcppSimdJson::fparse(httr2::resp_body_string(resp))
-}
-
 #' @noRd
-inform_nin_feature <- function(nin_feature) {
+inform_nin_feature <- function(
+  nin_feature,
+  error_call = rlang::caller_call()
+) {
   if (length(nin_feature) == 0) {
     return(invisible(NULL))
   }
 
-  cli::cli_inform(
+  # TODO fix with pluralisation
+  cli::cli_alert_danger(
     paste0(
       "Columns in `.data` not in feature(s): ",
       ifelse(
@@ -265,18 +191,28 @@ inform_nin_feature <- function(nin_feature) {
       )
     )
   )
+
+  if (rlang::is_interactive()) {
+    cont <- utils::menu(
+      c("Yes", "No"),
+      title = "Columns not found in feature service. Would you like to continue?"
+    )
+
+    if (cont == 2L) {
+      cli::cli_abort("Stopping.", call = error_call)
+    }
+  }
 }
 
 
 # Delete Features ---------------------------------------------------------
-
 
 #' Delete Features from Feature Layer
 #'
 #' Delete features from a feature layer based on object ID, a where clause, or a
 #' spatial filter.
 #'
-#' @inheritParams obj_check_layer
+#' @inheritParams arc_select
 #' @param object_ids a numeric vector of object IDs to be deleted.
 #' @param where a simple SQL where statement indicating which features should be
 #'   deleted. When the where statement evaluates to `TRUE`, those values will be
@@ -288,25 +224,36 @@ inform_nin_feature <- function(nin_feature) {
 #' @export
 #' @rdname modify
 delete_features <- function(
-    x,
-    object_ids = NULL,
-    where = NULL,
-    filter_geom = NULL,
-    predicate = "intersects",
-    rollback_on_failure = TRUE,
-    token = arc_token(),
-    ...
+  x,
+  object_ids = NULL,
+  where = NULL,
+  filter_geom = NULL,
+  predicate = "intersects",
+  rollback_on_failure = TRUE,
+  chunk_size = 500,
+  progress = TRUE,
+  token = arc_token()
 ) {
-
   obj_check_layer(x)
 
   # where, oid, or filter_geom necessary
   if (is.null(object_ids) && is.null(where) && is.null(filter_geom)) {
     cli::cli_abort(
-      c("No features to delete",
-      "i" = "Supply at least one of {.arg object_ids}, {.arg where},
-      or {.arg filter_geom}")
+      c(
+        "No features to delete",
+        "i" = "Supply at least one of {.arg object_ids}, {.arg where},
+      or {.arg filter_geom}"
+      )
     )
+  }
+
+  if (!rlang::is_integerish(object_ids) && !is.null(object_ids)) {
+    cli::cli_abort(
+      "`object_ids` must be an integer vector. Consider casting to integer via {.function as.integer}"
+    )
+  } else {
+    # explicitly ensure that they are integers
+    object_ids <- as.integer(object_ids)
   }
 
   if (!is.null(object_ids)) {
@@ -330,18 +277,55 @@ delete_features <- function(
   # https://developers.arcgis.com/rest/services-reference/enterprise/delete-features.htm
   req <- arc_base_req(paste0(x[["url"]], "/deleteFeatures"), token)
 
-  req <- httr2::req_body_form(
-    req,
-    !!!(compact(list(where = where, objectIds = object_ids))),
-    !!!filter_geom,
-    f = "json",
-    rollbackOnFailure = rollback_on_failure,
-    ...
+  n <- length(object_ids)
+  indices <- chunk_indices(n, chunk_size)
+
+  n_chunks <- lengths(indices)[1]
+  # # pre-allocate list
+  all_reqs <- vector("list", length = n_chunks)
+
+  if (progress) {
+    pb <- cli::cli_progress_bar(
+      "Chunking object ids",
+      type = "iterator",
+      total = n_chunks
+    )
+  }
+
+  # # populate the requests veector
+  for (i in seq_along(all_reqs)) {
+    if (progress) {
+      cli::cli_progress_update(1, id = pb)
+    }
+    start <- indices[["start"]][i]
+    end <- indices[["end"]][i]
+
+    all_reqs[[i]] <- httr2::req_body_form(
+      req,
+      !!!(compact(list(where = where, objectIds = object_ids[start:end]))),
+      !!!filter_geom,
+      f = "json",
+      rollbackOnFailure = rollback_on_failure
+    )
+  }
+
+  if (progress) {
+    cli::cli_progress_done(pb)
+  }
+
+  # send the requests in parallel
+  all_resps <- httr2::req_perform_parallel(all_reqs, progress = progress)
+
+  # parse the responses into a data frame
+  res <- do.call(
+    rbind.data.frame,
+    lapply(all_resps, function(res) {
+      resp_str <- httr2::resp_body_string(res)
+      catch_error(resp_str)
+      resp <- RcppSimdJson::fparse(resp_str)
+      resp[["deleteResults"]]
+    })
   )
 
-  resp <- httr2::req_perform(req)
-
-  RcppSimdJson::fparse(httr2::resp_body_string(resp))
+  data_frame(res)
 }
-
-
